@@ -1,0 +1,278 @@
+PEP: 9999
+Title: Python Package Index (Warehouse) Legacy JSON API
+Author: Cooper Lees <me@cooperlees.com>,
+        Nikita Chepanov <nikita@chepanov.com>,
+        Sumana Harihareswara <sh@changeset.nyc>
+Status: Draft
+Type: Informational
+Content-Type: text/x-rst
+Sponsor: Łukasz Langa <lukasz@python.org>
+BDFL-Delegate: Donald Stufft <donald at stufft.io>
+Created: 28-Jun-2020
+Post-History: 10-Jun-2020
+
+
+.. highlight:: rst
+
+Abstract
+========
+
+The Python Package Index (Warehouse) provides a way of querying project
+metadata known as the JSON API. This PEP formalizes the existing API as version 1.0.
+
+Motivation
+==========
+
+The JSON API was never standardized, and 3rd-party index implementations had to
+reverse engineer the format to implement it.
+
+This PEP aims to lock in the existing format of the API returned data as a standard.
+This is to create a guarantee for consumers (e.g., client applications like pip, pipenv and more).
+It also aims to help other indexes (such as devpi, pypiserver or proprietary indexes) to
+implement the standard and be assured of interoperability.
+
+Definitions
+===========
+
+* **Legacy JSON API**: Canonical / historical name given to this API described in this PEP
+* **Release file**: Downloadable and installable distribution with Python source or binaries
+* **Project**: A PyPI Project is a pip-installable Python package typically containing multiple versions with
+  potentially multiple installable artifacts
+* **Project release**: In the context of the JSON API, a Project Release is a set of Release Files associated
+  with a specific version
+
+Goal
+=====
+
+Formalize the structure of the legacy JSON API without changing the output format.
+This pep also aims to document all properties in the API specifying whether they are required, optional,
+deprecated while detailing their intended meaning and type. A lot of the fields/keys expose
+data from the `Packaging Core Metadata <https://packaging.python.org/en/latest/specifications/core-metadata>`_
+specification.
+
+Non-goals
+=========
+
+The following are not part of this proposal, but is likely to warrant subsequent
+PEPs:
+
+* Adding properties that aren't already returned by the legacy JSON API endpoints
+* Removing properties that are already returned by the legacy JSON API endpoints
+* Adding discovery endpoints
+* Adding pagination capabilities
+* Adding authentication
+* Adding writeable endpoints
+* Deprecating the legacy JSON API endpoints
+* Supporting TUF (PEP 458): This version of the JSON API is not protected by TUF,
+  and so should not be used for dependency resolution.
+* Deprecating XML-RPC API: The PEP lays out the foundation for the future deprecation of the XML-RPC API.
+
+
+Specification
+=============
+
+The JSON API is a HTTP GET based API.
+
+
+Response Headers
+----------------
+
+HTTP responses must be sent with the following content type:
+
+.. code-block::
+
+   content-type: application/json
+
+
+API URLs
+--------
+
+All URLs are described relative to a ``$root``.
+In case of PyPI the ``$root`` is https://pypi.org.
+
+* ``$root/pypi/$project_name/json``
+* ``$root/pypi/$project_name/$version/json``
+
+The two URLs have identical structure, however the version-less URL will always
+return the latest installable version.
+
+For example if the latest installable version of ``urllib3`` is 1.26.6, then:
+``$root/pypi/urllib3/json`` is equivalent to ``$root/pypi/urllib3/1.26.6/json``.
+
+Canonical project names
+------------------------
+
+The ``$project_name`` parameter is always normalized as described in PEP 503 [2]_.
+This can be done using ``packaging.utils.canonicalize_name``.
+
+If the requested project name can be normalized to match an existing project.
+The API then must reply with "301 Moved Permanently" and provide
+a "Location" header with a normalized project name.
+
+For example if ``importlib-metadata`` is the canonical name of the project,
+then when ``$root/pypi/Importlib.-_-.Metadata/json`` is requested the API must reply with:
+
+.. code-block::
+
+   HTTP/1.1 301 Moved Permanently
+
+   content-type: text/html; charset=UTF-8
+   location: $root/pypi/importlib-metadata/json 
+
+Project version normalization
+-----------------------------
+
+The version is also normalized using ``packaging.utils.canonicalize_version``.
+
+For example the following URLs would return  identical results:
+
+* ``$root/pypi/urllib3/1.26.6/json``
+* ``$root/pypi/urllib3/1.26.6.0.0.0/json``
+
+
+Dealing with errors
+-------------------
+
+Client errors are all handled via HTTP response codes. The following is
+returned:
+
+* 301: When a JSON URL has a trailing "/" the server should redirect to
+  a URL removing the tailing "/" removed
+* 301: When the requested project name is not normalized, but matched a known
+  project after normalization.
+* 404: When a projects does not exist or requested version cannot be found.
+* 500: When an internal code logic or database error occurs
+
+Response Specification
+-----------------------
+
+A ``json_api.schema.json`` JSON Schema file can be found `here
+<pep-9999/json_api.schema.json>`_.
+
+Some of the properties are marked as "[DEPRECATED]" which means they should be
+present, but the contents of the properties should not be populated or relied on
+by the users.
+
+There are four main top level keys:
+
+.. code-block::
+
+   {
+      "info": {...},
+      "last_serial": {...},
+      "releases": {...},
+      "urls": {...},
+      "vulnerabilities": {...}
+   }
+
+**info**
+
+This property contains a JSON object with generic information about the requested
+version of the project. Many of the properties are generated from
+https://packaging.python.org/specifications/core-metadata/.
+
+A minimal response containing only the required properties may look like this:
+
+.. code-block::
+
+   {
+      author: "A. Random Developer",
+      author_email: "author@example.com",
+      license: "MIT",
+      name: "sampleproject",
+      project_url: "https://pypi.org/project/sampleproject/",
+      version: "2.0.0",
+      yanked: false,
+      yanked_reason: null
+   }
+
+
+**last_serial**
+
+The serial is a monotonically increasing integer sequence available for each
+project that changes every time the project is updated. PyPI calculates this number
+for the main index and each index can implement their own algorithm there as long as
+it's monotonically increasing integer returned.
+
+**releases** and **urls**
+
+The ``releases`` property contains all available Release files across all
+released versions of the project including yanked releases and pre-releases.
+
+The list of released files can be empty for some versions of the project.
+
+The ``urls`` property only provides information about the requested version of the
+project. Consequently the content of the ``urls`` property is always duplicated
+as one of the versions in the ``releases`` property.
+
+For example, if ``$root/pypi/urllib3/1.26.6/json`` was requested, the
+content of ``urls`` property in the example below will be identical to the
+contents of ``releases["1.26.6"]``.
+
+Each ``{urllib3-1.26.6-...}`` block represents a Release file described in the
+following section.
+
+.. code-block::
+
+  "releases: {
+    ...
+    "1.26.4": [...],
+    "1.26.5": [...],
+    "1.26.6": [{urllib3-1.26.6-py2.py3-none-any.whl}, {urllib3-1.26.6.tar.gz}],
+    ...
+  },
+  "urls": [{urllib3-1.26.6-py2.py3-none-any.whl}, {urllib3-1.26.6.tar.gz}]
+
+**Release file**
+
+A downloadable and installable artifact, always associated with a particular
+version of the project.
+
+A minimal example containing only the required properties may look like this:
+
+.. code-block::
+
+   {
+      filename: "sampleproject-2.0.0-py3-none-any.whl",
+      url: "https://files.pythonhosted.org/packages/b8/f7/dd9223b39f683690c30f759c876df0944815e47b588cb517e4b9e652bcf7/sampleproject-2.0.0-py3-none-any.whl",
+      digests: {
+         md5: "34b3750e8a39e7c2930cac64cd44ca0a",
+         sha256: "2b0c55537193b792098977fdb62f0acbaeb2c3cfc56d0e24ccab775201462e04"
+      },
+      packagetype: "bdist_wheel",
+      size: 4209,
+      upload_time: "2020-06-25T19:09:43",
+      upload_time_iso_8601: "2020-06-25T19:09:43.103653Z",
+      yanked: false,
+      yanked_reason: null
+   },
+
+References
+==========
+
+.. [1] JSON Schema https://json-schema.org/
+.. [2] PEP 503 pep-0503
+.. [3] Semantic Versioning https://semver.org/
+
+
+Acknowledgments
+===============
+
+* GitHub issue requesting PEP - https://github.com/pypa/packaging-problems/issues/367
+* Discussion 1 - https://discuss.python.org/t/pep-for-the-python-package-index-json-api/5717/14
+* Discussion 2 - https://discuss.python.org/t/pep-rfc-python-package-index-warehouse-json-api-v1/9205/15
+* devpi issue requesting JSON API Support - https://github.com/devpi/devpi/issues/801
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:
